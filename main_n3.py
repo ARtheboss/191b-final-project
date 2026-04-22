@@ -56,7 +56,7 @@ for i in range(N):
 H = H.norm() * H.unit()
 
 # 4. GLOBAL DISSIPATOR
-energies, states = H.eigenstates(eigvals=100)
+energies, states = H.eigenstates(eigvals=30)
 c_ops = []
 
 for i in range(len(energies)):

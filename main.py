@@ -42,7 +42,7 @@ for i in range(N):
                 H += B * D[i, j] * (q_op(get_idx(i, t)) * q_op(get_idx(j, (t+1)%N)))
 
 # 4. GLOBAL DISSIPATOR
-energies, states = H.eigenstates()
+energies, states = H.eigenstates(eigvals=5)
 c_ops = []
 
 for i in range(len(energies)):
