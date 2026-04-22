@@ -1,91 +1,77 @@
 import numpy as np
-import matplotlib.pyplot as plt
 from qutip import *
 
-# 1. PARAMETERS
-N = 2  # Cities
-num_qubits = N**2
-A = 5.0  # Penalty for breaking rules
-B = 1.0   # Weight for road distance
+# 1. HARD-CODED PARAMETERS (No variables to avoid leakage)
+N = 2  
+num_qubits = N**2 # Fixed at 4 for N=2
 
-# Distance Matrix (4x4)
-D = np.array([
-    [0, 10, 5, 8],
-    [10, 0, 7, 3],
-    [5, 7, 0, 4],
-    [8, 3, 4, 0]
-])
+# 2x2 Distance Matrix
+D = np.array([[0, 5], [20, 0]])
+
+A = np.max(D) * N
+B = 1.0   
+gamma = 0.5
+beta = 5.0 
 
 def get_idx(city, step):
-    return city * N + step
+    return (city * N) + step # Should be 0, 1, 2, or 3
 
-# 2. OPTIMIZED OPERATOR BUILDER
-print(f"Initializing {num_qubits}-qubit identity...")
-eye_all = qeye([2] * num_qubits)
-
+# 2. CLEAN OPERATOR BUILDER
 def make_op(single_qubit_op, idx):
-    """Efficiently places a gate on qubit 'idx' among 'num_qubits'."""
-    op_list = [qeye(2)] * num_qubits
+    # Ensure we never create a tensor larger than 4 qubits
+    op_list = [qeye(2)] * 4 
     op_list[idx] = single_qubit_op
     return tensor(op_list)
 
+eye_all = tensor([qeye(2)] * 4)
+
 def q_op(idx):
-    """Maps qubit state to binary 0 or 1: (I - Z)/2."""
     return 0.5 * (eye_all - make_op(sigmaz(), idx))
 
-# 3. HAMILTONIAN CONSTRUCTION
-print("Building TSP Hamiltonian (this may take a minute)...")
+# 3. HAMILTONIAN
 H = 0
-
-# Constraint 1: Each city visited exactly once
+H += A * (eye_all - q_op(get_idx(0, 0)))
 for i in range(N):
-    count_visits = sum(q_op(get_idx(i, t)) for t in range(N))
-    H += A * (count_visits - eye_all)**2
-
-# Constraint 2: Only one city per time step
+    H += A * (sum(q_op(get_idx(i, t)) for t in range(N)) - eye_all)**2
 for t in range(N):
-    count_cities = sum(q_op(get_idx(i, t)) for i in range(N))
-    H += A * (count_cities - eye_all)**2
-
-# Cost: Sum of distances
+    H += A * (sum(q_op(get_idx(i, t)) for i in range(N)) - eye_all)**2
 for i in range(N):
     for j in range(N):
         if i != j:
             for t in range(N):
-                t_next = (t + 1) % N
-                # If we are in city i at t and city j at t+1, add distance
-                H += B * D[i, j] * (q_op(get_idx(i, t)) * q_op(get_idx(j, t_next)))
+                H += B * D[i, j] * (q_op(get_idx(i, t)) * q_op(get_idx(j, (t+1)%N)))
 
-# 4. DISSIPATIVE COOLING
-print("Setting up dissipative jump operators...")
-gamma = 1.0
-# We apply a lowering operator (sigmam) to every qubit to drain energy
-c_ops = [np.sqrt(gamma) * make_op(sigmam(), i) for i in range(num_qubits)]
+# 4. GLOBAL DISSIPATOR
+energies, states = H.eigenstates()
+c_ops = []
 
-# 5. RUN SIMULATION
-# Start in a 'hot' state (equal superposition of all paths)
-# Create a single '+' state: (|0> + |1>) / sqrt(2)
+for i in range(len(energies)):
+    for j in range(len(energies)):
+        delta_E = energies[j] - energies[i]
+        
+        # We only want transitions from HIGH energy (i) to LOW energy (j)
+        if delta_E < -0.1:
+            # Drop the exponential suppression for downward jumps
+            # or use a thermal factor if you want to model a specific temp.
+            # Here, we just give it a uniform cooling rate.
+            strength = np.sqrt(gamma) 
+            
+            # Create a SEPARATE operator for every transition to avoid interference
+            jump_op = strength * (states[j] * states[i].dag())
+            c_ops.append(jump_op)
+
+# 5. SIMULATION
 plus = (basis(2, 0) + basis(2, 1)).unit()
+psi0 = tensor([plus] * 4)
+times = np.linspace(0, 100, 500)
 
-# Create the initial state as a tensor product of 16 '+' states
-psi0 = tensor([plus] * num_qubits)
-times = np.linspace(0, 150, 300)
+# Create a list of the 4 operators we want to monitor
+# (City 0 Step 0, City 0 Step 1, City 1 Step 0, City 1 Step 1)
+monitor_ops = [q_op(i) for i in range(num_qubits)]
 
-print("Running Monte Carlo simulation...")
-# ntraj=1 provides a single 'pathway' to the solution to save memory
-result = mcsolve(H, psi0, times, c_ops, ntraj=1)
+result = mesolve(H, psi0, times, c_ops, monitor_ops)
 
-# 6. EXTRACT SOLUTION
-final_ket = result.states[-1]
-# Find the bitstring with the highest probability
-probs = np.abs(final_ket.full())**2
-best_idx = np.argmax(probs)
-binary_sol = format(best_idx, f'0{num_qubits}b')
-
-print("\n--- RESULTS ---")
-print(f"Winning Bitstring: {binary_sol}")
-for t in range(N):
-    for i in range(N):
-        # Qubit index logic for time t and city i
-        if binary_sol[get_idx(i, t)] == '1':
-            print(f"Step {t}: Visit City {i}")
+print("\n--- FINAL PROBABILITIES ---")
+for i in range(num_qubits):
+    final_prob = result.expect[i][-1]
+    print(f"Qubit {i} (City {i//N}, Step {i%N}): {final_prob:.4f}")
